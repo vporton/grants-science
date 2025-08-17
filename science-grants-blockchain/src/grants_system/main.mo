@@ -35,7 +35,7 @@ persistent actor GrantsSystem {
     // Types
     public type TokenType = {
         #ICP;
-        #IS20: Text; // Token canister ID
+        #IS20: Text; // Token canister ID // FIXME: Why is this a Text? Should be a Principal.
     };
     
     public type DonationSpec = {
