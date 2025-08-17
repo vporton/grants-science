@@ -104,7 +104,7 @@ persistent actor Wallet {
     public shared(msg) func createWallet() : async Result.Result<WalletInfo, Text> {
         let caller = msg.caller;
         
-        switch (userWallets.get(caller)) {
+        switch (Map.get(userWallets, Principal.compare, caller)) {
             case (?existing) { #ok(existing) };
             case null {
                 // Generate subaccount for user
@@ -118,7 +118,7 @@ persistent actor Wallet {
                     accountId = accountId;
                 };
                 
-                userWallets.put(caller, walletInfo);
+                ignore Map.insert(userWallets, Principal.compare, caller, walletInfo);
                 #ok(walletInfo)
             };
         }
@@ -128,7 +128,7 @@ persistent actor Wallet {
     public shared query(msg) func getWallet() : async Result.Result<WalletInfo, Text> {
         let caller = msg.caller;
         
-        switch (userWallets.get(caller)) {
+        switch (Map.get(userWallets, Principal.compare, caller)) {
             case (?wallet) { #ok(wallet) };
             case null { #err("Wallet not found. Please create a wallet first.") };
         }
@@ -138,7 +138,7 @@ persistent actor Wallet {
     public shared(msg) func getBalance() : async Result.Result<Tokens, Text> {
         let caller = msg.caller;
         
-        switch (userWallets.get(caller)) {
+        switch (Map.get(userWallets, Principal.compare, caller)) {
             case (?wallet) {
                 // Query ICP ledger for actual balance
                 let accountId = wallet.accountId;
@@ -151,7 +151,7 @@ persistent actor Wallet {
                     balance = balance;
                     accountId = wallet.accountId;
                 };
-                userWallets.put(caller, updatedWallet);
+                ignore Map.insert(userWallets, Principal.compare, caller, updatedWallet);
                 
                 #ok(balance)
             };
@@ -163,7 +163,7 @@ persistent actor Wallet {
     public shared(msg) func transfer(request : TransferRequest) : async Result.Result<Nat64, Text> {
         let caller = msg.caller;
         
-        switch (userWallets.get(caller)) {
+        switch (Map.get(userWallets, Principal.compare, caller)) {
             case (?wallet) {
                 // Check if user has sufficient balance
                 let currentBalance = await getBalance();
@@ -200,7 +200,7 @@ persistent actor Wallet {
                                     balance = newBalance;
                                     accountId = wallet.accountId;
                                 };
-                                userWallets.put(caller, updatedWallet);
+                                ignore Map.insert(userWallets, Principal.compare, caller, updatedWallet);
                                 
                                 #ok(blockIndex)
                             };
@@ -229,7 +229,7 @@ persistent actor Wallet {
     public shared(msg) func transferToWallet(amount : Tokens) : async Result.Result<Nat64, Text> {
         let caller = msg.caller;
         
-        switch (userWallets.get(caller)) {
+        switch (Map.get(userWallets, Principal.compare, caller)) {
             case (?wallet) {
                 // This would typically be called by the grants system
                 // The grants system would transfer ICP from its account to the user's wallet
@@ -246,7 +246,7 @@ persistent actor Wallet {
                             balance = newBalance;
                             accountId = wallet.accountId;
                         };
-                        userWallets.put(caller, updatedWallet);
+                        ignore Map.insert(userWallets, Principal.compare, caller, updatedWallet);
                         
                         #ok(0) // Mock block index
                     };
@@ -260,7 +260,7 @@ persistent actor Wallet {
     public shared query(msg) func getAccountId() : async Result.Result<AccountIdentifier, Text> {
         let caller = msg.caller;
         
-        switch (userWallets.get(caller)) {
+        switch (Map.get(userWallets, Principal.compare, caller)) {
             case (?wallet) { #ok(wallet.accountId) };
             case null { #err("Wallet not found. Please create a wallet first.") };
         }
@@ -294,7 +294,7 @@ persistent actor Wallet {
         let principalArray = Blob.toArray(principalBlob);
         let subaccountArray = Blob.toArray(subaccountBlob);
         
-        Blob.fromArray(Array.append(principalArray, subaccountArray))
+        Blob.fromArray(Array.concat(principalArray, subaccountArray))
     };
     
     // System functions for upgrade

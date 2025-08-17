@@ -37,7 +37,19 @@ persistent actor GrantsSystem {
         #ICP;
         #IS20: Text; // Token canister ID // FIXME: Why is this a Text? Should be a Principal.
     };
-    
+
+// Returns -1 if a < b, 0 if a == b, +1 if a > b
+    private func compareTokenType(a: TokenType, b: TokenType) : Order.Order {
+        switch (a, b) {
+            case (#ICP, #ICP) { #equal };
+            case (#ICP, #IS20 _) { #less }; // Define ICP < IS20
+            case (#IS20 _, #ICP) { #greater };
+            case (#IS20 id1, #IS20 id2) {
+                Text.compare(id1, id2)
+            };
+        }
+    };
+
     public type DonationSpec = {
         projectId: Text;
         amount: Nat;
@@ -160,12 +172,12 @@ persistent actor GrantsSystem {
                     return #err("Cannot contribute to matching pool after round starts");
                 };
                 
-                let current = switch (Map.get(matchingPool, TokenType.compare, token)) {
+                let current = switch (Map.get(matchingPool, compareTokenType, token)) {
                     case null { 0 };
                     case (?amt) { amt };
                 };
                 
-                matchingPool.put(token, current + amount);
+                ignore Map.insert(matchingPool, compareTokenType, token, current + amount);
                 #ok("Added to matching pool")
             };
         }
@@ -190,14 +202,14 @@ persistent actor GrantsSystem {
                     errors = 0;
                 };
                 
-                servers.put(msg.caller, serverInfo);
+                ignore Map.insert(servers, Principal.compare, msg.caller, serverInfo);
                 
                 // Add to matching pool
-                let current = switch (matchingPool.get(#ICP)) {
+                let current = switch (Map.get(matchingPool, compareTokenType, #ICP)) {
                     case null { 0 };
                     case (?amt) { amt };
                 };
-                matchingPool.put(#ICP, current + amount);
+                ignore Map.insert(matchingPool, compareTokenType, #ICP, current + amount);
                 
                 #ok("Server pledged successfully")
             };
@@ -246,7 +258,7 @@ persistent actor GrantsSystem {
                 // Transfer funds from wallet to grants system (simplified for now)
                 // In a real implementation, this would transfer to the grants system's account
                 let transferRequest : WalletTransferRequest = {
-                    to = Blob.fromArray(Array.freeze(Array.init<Nat8>(32, 0))); // Grants system account
+                    to = Blob.fromArray(Array.repeat<Nat8>(0, 32)); // Grants system account
                     amount = { e8s = Nat64.fromNat(spec.amount) };
                     memo = ?Nat64.fromNat(Int.abs(Time.now()));
                 };
@@ -258,13 +270,13 @@ persistent actor GrantsSystem {
                 };
                 
                 // Record donation
-                let projectDonations = switch (donations.get(spec.projectId)) {
+                let projectDonations = switch (Map.get(donations, Text.compare, spec.projectId)) {
                     case null { [] };
                     case (?existing) { existing };
                 };
                 
-                let newDonations = Array.append(projectDonations, [spec]);
-                donations.put(spec.projectId, newDonations);
+                let newDonations = Array.concat(projectDonations, [spec]);
+                ignore Map.insert(donations, Text.compare, spec.projectId, newDonations);
                 
                 // Update project stats
                 updateProjectStats(spec);
@@ -285,12 +297,12 @@ persistent actor GrantsSystem {
             timestamp = Time.now();
         };
         
-        let scores = switch (passportScores.get(address)) {
+        let scores = switch (Map.get(passportScores, Text.compare, address)) {
             case null { [] };
             case (?existing) { existing };
         };
         
-        passportScores.put(address, Array.append(scores, [passport]));
+        ignore Map.insert(passportScores, Text.compare, address, Array.concat(scores, [passport]));
         #ok("Passport score submitted")
     };
     
@@ -299,29 +311,29 @@ persistent actor GrantsSystem {
         switch (currentRound) {
             case null { 0 };
             case (?round) {
-                let projectDonations = switch (donations.get(projectId)) {
+                let projectDonations = switch (Map.get(donations, Text.compare, projectId)) {
                     case null { return 0 };
                     case (?d) { d };
                 };
                 
                 // Group donations by donor and calculate square roots
-                let donorTotals = Map.Map<Principal, Float>(100, Principal.equal, Principal.hash);
+                let donorTotals = Map.empty<Principal, Float>();
                 
                 for (donation in projectDonations.vals()) {
                     let donor = Principal.fromText(donation.projectId); // This should be donor address
-                    let current = switch (donorTotals.get(donor)) {
+                    let current = switch (Map.get(donorTotals, Principal.compare, donor)) {
                         case null { 0.0 };
                         case (?amt) { amt };
                     };
                     
                     // Get passport score
                     let score = getMedianPassportScore(Principal.toText(donor));
-                    donorTotals.put(donor, current + Float.fromInt(donation.amount) * score);
+                    ignore Map.insert(donorTotals, Principal.compare, donor, current + Float.fromInt(donation.amount) * score);
                 };
                 
                 // Calculate sum of square roots
                 var sumOfSqrts = 0.0;
-                for ((_, amount) in donorTotals.entries()) {
+                for ((_, amount) in Map.entries(donorTotals)) {
                     sumOfSqrts += Float.sqrt(amount);
                 };
                 
@@ -329,7 +341,7 @@ persistent actor GrantsSystem {
                 let matchingAmount = sumOfSqrts ** 2;
                 
                 // Get total matching pool for token type
-                let totalPool = switch (matchingPool.get(#ICP)) {
+                let totalPool = switch (Map.get(matchingPool, compareTokenType, #ICP)) {
                     case null { 0.0 };
                     case (?amt) { Float.fromInt(amt) };
                 };
@@ -354,9 +366,9 @@ persistent actor GrantsSystem {
                 };
                 
                 // Calculate distributions for each project
-                label l for ((projectId, _) in donations.entries()) {
+                label l for ((projectId, _) in Map.entries(donations)) {
                     let matching = await calculateMatching(projectId);
-                    let stats = switch (projectStats.get(projectId)) {
+                    let stats = switch (Map.get(projectStats, Text.compare, projectId)) {
                         case (?s) { s };
                         case null { continue l };
                     };
@@ -366,12 +378,12 @@ persistent actor GrantsSystem {
                     let afterTax = totalAmount * (100 - round.worldScienceDAOTax) / 100;
                     
                     // Store withdrawal allowance
-                    let current = switch (withdrawals.get(projectId)) {
+                    let current = switch (Map.get(withdrawals, Text.compare, projectId)) {
                         case (?w) { w };
                         case null { [] };
                     };
                     
-                    withdrawals.put(projectId, Array.append(current, [(#ICP, afterTax)]));
+                    ignore Map.insert(withdrawals, Text.compare, projectId, Array.concat(current, [(#ICP, afterTax)]));
                 };
                 
                 #ok("Distributions calculated")
@@ -382,7 +394,7 @@ persistent actor GrantsSystem {
     
     // Withdraw funds
     public shared(msg) func withdraw(projectId: Text) : async Result.Result<Nat, Text> {
-        switch (withdrawals.get(projectId)) {
+        switch (Map.get(withdrawals, Text.compare, projectId)) {
             case null { #err("No funds to withdraw") };
             case (?funds) {
                 var total = 0;
@@ -391,7 +403,7 @@ persistent actor GrantsSystem {
                 };
                 
                 // Clear withdrawals
-                withdrawals.delete(projectId);
+                ignore Map.delete(withdrawals, Text.compare, projectId);
                 
                 // In real implementation, transfer funds here
                 #ok(total)
@@ -401,7 +413,7 @@ persistent actor GrantsSystem {
     
     // Helper functions
     private func updateProjectStats(donation: DonationSpec) {
-        let stats = switch (projectStats.get(donation.projectId)) {
+        let stats = switch (Map.get(projectStats, Text.compare, donation.projectId)) {
             case null {
                 {
                     totalDonations = 0;
@@ -435,7 +447,7 @@ persistent actor GrantsSystem {
                     );
                     
                     if (not found) {
-                        Array.append(updated, [(aff, donation.amount)])
+                        Array.concat(updated, [(aff, donation.amount)])
                     } else {
                         updated
                     }
@@ -443,11 +455,11 @@ persistent actor GrantsSystem {
             };
         };
         
-        projectStats.put(donation.projectId, updatedStats);
+        ignore Map.insert(projectStats, Text.compare, donation.projectId, updatedStats);
     };
     
     private func getMedianPassportScore(address: Text) : Float {
-        switch (passportScores.get(address)) {
+        switch (Map.get(passportScores, Text.compare, address)) {
             case null { 1.0 }; // Default score
             case (?scores) {
                 if (scores.size() == 0) { return 1.0 };
@@ -577,11 +589,11 @@ persistent actor GrantsSystem {
     };
     
     public query func getProjectStats(projectId: Text) : async ?ProjectStats {
-        projectStats.get(projectId)
+        Map.get(projectStats, Text.compare, projectId)
     };
     
     public query func getMatchingPool(token: TokenType) : async Nat {
-        switch (matchingPool.get(token)) {
+        switch (Map.get(matchingPool, compareTokenType, token)) {
             case null { 0 };
             case (?amount) { amount };
         }
@@ -621,7 +633,7 @@ persistent actor GrantsSystem {
                             submittedBy = msg.caller;
                         };
                         
-                        projects.put(projectId, project);
+                        ignore Map.insert(projects, Text.compare, projectId, project);
                         
                         // Initialize project stats
                         let initialStats: ProjectStats = {
@@ -630,7 +642,7 @@ persistent actor GrantsSystem {
                             matchingAmount = 0;
                             affiliates = [];
                         };
-                        projectStats.put(projectId, initialStats);
+                        ignore Map.insert(projectStats, Text.compare, projectId, initialStats);
                         
                         #ok(projectId)
                     };
@@ -641,16 +653,16 @@ persistent actor GrantsSystem {
     
     // Get all projects
     public query func getProjects() : async [Project] {
-        let projectArray = List.List<Project>(0);
-        for ((_, project) in projects.entries()) {
-            projectArray.add(project);
+        let projectArray = List.empty<Project>();
+        for ((_, project) in Map.entries(projects)) {
+            List.add(projectArray, project);
         };
         List.toArray(projectArray)
     };
     
     // Get a specific project
     public query func getProject(projectId: Text) : async ?Project {
-        projects.get(projectId)
+        Map.get(projects, Text.compare, projectId)
     };
     
     // Wallet-related functions
